@@ -104,14 +104,10 @@ def convert_claude_to_openai(
                 ):
                     # Process tool results
                     i += 1  # Skip to tool result message
-                    if thinking_enabled:
-                        # When thinking is enabled, tool results go in user message content
-                        tool_result_message = convert_claude_tool_results_for_thinking(next_msg)
-                        openai_messages.append(tool_result_message)
-                    else:
-                        # Traditional OpenAI format with separate tool messages
-                        tool_results = convert_claude_tool_results(next_msg)
-                        openai_messages.extend(tool_results)
+                    # Use standard OpenAI tool message format for all cases
+                    # This maintains compatibility with all OpenAI-compatible endpoints
+                    tool_results = convert_claude_tool_results(next_msg)
+                    openai_messages.extend(tool_results)
 
         i += 1
 
@@ -337,31 +333,6 @@ def convert_claude_tool_results(msg: ClaudeMessage) -> List[Dict[str, Any]]:
 
     return tool_messages
 
-
-def convert_claude_tool_results_for_thinking(msg: ClaudeMessage) -> Dict[str, Any]:
-    """Convert Claude tool results to thinking-enabled format (content blocks in user message)."""
-    content_blocks = []
-
-    if isinstance(msg.content, list):
-        for block in msg.content:
-            if block.type == Constants.CONTENT_TOOL_RESULT:
-                content = parse_tool_result_content(block.content)
-                content_blocks.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.tool_use_id,
-                    "content": content
-                })
-            elif block.type == Constants.CONTENT_TEXT:
-                # Preserve any text content in the message
-                content_blocks.append({
-                    "type": "text",
-                    "text": block.text
-                })
-
-    return {
-        "role": Constants.ROLE_USER,
-        "content": content_blocks
-    }
 
 
 def parse_tool_result_content(content):
