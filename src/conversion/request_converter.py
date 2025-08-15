@@ -229,13 +229,12 @@ def convert_claude_assistant_message(msg: ClaudeMessage, thinking_enabled: bool 
         return {"role": Constants.ROLE_ASSISTANT, "content": None}
     
     if isinstance(msg.content, str):
-        # If thinking is enabled and we have a simple string, we need to add a thinking block
+        # If thinking is enabled and we have a simple string, put it in a thinking block
         if thinking_enabled:
             return {
                 "role": Constants.ROLE_ASSISTANT, 
                 "content": [
-                    {"type": "thinking", "thinking": "..."},
-                    {"type": "text", "text": msg.content}
+                    {"type": "thinking", "thinking": msg.content}
                 ]
             }
         return {"role": Constants.ROLE_ASSISTANT, "content": msg.content}
@@ -244,8 +243,18 @@ def convert_claude_assistant_message(msg: ClaudeMessage, thinking_enabled: bool 
         if block.type == Constants.CONTENT_TEXT:
             text_blocks.append({"type": "text", "text": block.text})
         elif block.type == Constants.CONTENT_TOOL_USE:
-            # When thinking is enabled, tool uses go in content blocks
-            # When thinking is disabled, they go in separate tool_calls field
+            # Always create tool_calls entry for tool result pairing
+            tool_calls.append(
+                {
+                    "id": block.id,
+                    "type": Constants.TOOL_FUNCTION,
+                    Constants.TOOL_FUNCTION: {
+                        "name": block.name,
+                        "arguments": json.dumps(block.input, ensure_ascii=False),
+                    },
+                }
+            )
+            # When thinking is enabled, also add to content blocks
             if thinking_enabled:
                 tool_use_blocks.append({
                     "type": "tool_use",
@@ -253,30 +262,18 @@ def convert_claude_assistant_message(msg: ClaudeMessage, thinking_enabled: bool 
                     "name": block.name,
                     "input": block.input
                 })
-            else:
-                tool_calls.append(
-                    {
-                        "id": block.id,
-                        "type": Constants.TOOL_FUNCTION,
-                        Constants.TOOL_FUNCTION: {
-                            "name": block.name,
-                            "arguments": json.dumps(block.input, ensure_ascii=False),
-                        },
-                    }
-                )
         elif block.type in [Constants.CONTENT_THINKING, Constants.CONTENT_REDACTED_THINKING]:
             thinking_blocks.append(block.model_dump(exclude_none=True))
 
-    # When thinking is enabled, ensure there's at least one thinking block at the start
-    if thinking_enabled and tool_use_blocks and not thinking_blocks:
-        thinking_blocks.append({"type": "thinking", "thinking": "..."})
-
-    # Handle content ordering - always preserve original structure when possible
-    if thinking_enabled and tool_use_blocks:
-        # When thinking is enabled with tools, we need to be careful about ordering
-        # Only merge text into thinking if there's no existing thinking content
-        if text_blocks and thinking_blocks and thinking_blocks[0].get("thinking") == "...":
-            # Only merge if the thinking block is a placeholder
+    # Handle content ordering - when thinking is enabled and there are tool use blocks,
+    # we MUST ensure a thinking block comes first per Anthropic's requirement
+    if thinking_enabled and (tool_use_blocks or tool_calls):
+        # Ensure we have at least one thinking block at the start
+        if not thinking_blocks:
+            thinking_blocks.append({"type": "thinking", "thinking": "..."})
+        
+        # If we have text content and only placeholder thinking, merge them
+        if text_blocks and len(thinking_blocks) == 1 and thinking_blocks[0].get("thinking") == "...":
             text_content = " ".join([block["text"] for block in text_blocks if block.get("text")])
             if text_content.strip():
                 thinking_blocks[0]["thinking"] = text_content
@@ -284,7 +281,7 @@ def convert_claude_assistant_message(msg: ClaudeMessage, thinking_enabled: bool 
                 text_blocks = []
                 logger.debug("Merged placeholder thinking with text content")
         
-        # Preserve proper ordering: thinking -> text -> tools (if text wasn't merged)
+        # Preserve proper ordering: thinking MUST be first, then text, then tools
         openai_content = thinking_blocks + text_blocks + tool_use_blocks
         logger.debug(f"Thinking enabled with tools: {len(thinking_blocks)} thinking + {len(text_blocks)} text + {len(tool_use_blocks)} tool blocks")
     else:
@@ -308,8 +305,8 @@ def convert_claude_assistant_message(msg: ClaudeMessage, thinking_enabled: bool 
     else:
         openai_message["content"] = None
 
-    # Set tool calls only when thinking is disabled
-    if tool_calls and not thinking_enabled:
+    # Always set tool calls when they exist (needed for tool result pairing)
+    if tool_calls:
         openai_message["tool_calls"] = tool_calls
 
     return openai_message
