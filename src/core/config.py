@@ -18,6 +18,7 @@ class Config:
         self.host = os.environ.get("HOST", "0.0.0.0")
         self.port = int(os.environ.get("PORT", "8082"))
         self.log_level = os.environ.get("LOG_LEVEL", "INFO")
+        self.debug_requests = os.environ.get("DEBUG_REQUESTS", "false").lower() == "true"
         self.max_tokens_limit = int(os.environ.get("MAX_TOKENS_LIMIT", "4096"))
         self.min_tokens_limit = int(os.environ.get("MIN_TOKENS_LIMIT", "100"))
         self.thinking_budget = int(os.environ.get("THINKING_BUDGET", "2048"))

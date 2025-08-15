@@ -1,3 +1,8 @@
+from dotenv import load_dotenv
+
+# Load environment variables first
+load_dotenv()
+
 from fastapi import FastAPI
 from src.api.endpoints import router as api_router
 import uvicorn
@@ -50,6 +55,8 @@ def main():
     print(f"   Request Timeout: {config.request_timeout}s")
     print(f"   Server: {config.host}:{config.port}")
     print(f"   Client API Key Validation: {'Enabled' if config.anthropic_api_key else 'Disabled'}")
+    print(f"   Debug Requests: {'Enabled' if config.debug_requests else 'Disabled'}")
+    print(f"   Log Level: {config.log_level}")
     print("")
 
     # Parse log level - extract just the first word to handle comments

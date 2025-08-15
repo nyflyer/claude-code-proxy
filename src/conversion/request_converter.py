@@ -254,8 +254,28 @@ def convert_claude_assistant_message(msg: ClaudeMessage, thinking_enabled: bool 
     if thinking_enabled and not thinking_blocks:
         thinking_blocks.append({"type": "thinking", "thinking": "..."})
 
-    # Re-order to ensure thinking blocks are first, followed by text, then tool_use blocks
-    openai_content = thinking_blocks + text_blocks + tool_use_blocks
+    # Handle content ordering based on thinking enablement and tool presence
+    if thinking_enabled and tool_use_blocks:
+        # When thinking is enabled AND tool calls are present, 
+        # text blocks must not appear between thinking and tool calls
+        # Merge any text content into the thinking block if needed
+        if text_blocks and thinking_blocks:
+            # Extract text content and merge into thinking block
+            text_content = " ".join([block["text"] for block in text_blocks if block.get("text")])
+            if text_content.strip():
+                # Enhance the thinking block with the text content
+                current_thinking = thinking_blocks[0].get("thinking", "...")
+                if current_thinking == "...":
+                    thinking_blocks[0]["thinking"] = text_content
+                else:
+                    thinking_blocks[0]["thinking"] = f"{current_thinking}\n\n{text_content}"
+        
+        # Only thinking blocks followed by tool use blocks (no text blocks in between)
+        openai_content = thinking_blocks + tool_use_blocks
+        logger.debug(f"Thinking enabled with tools: merged text into thinking block, final content has {len(thinking_blocks)} thinking + {len(tool_use_blocks)} tool blocks")
+    else:
+        # Normal ordering: thinking blocks first, then text, then tool_use blocks
+        openai_content = thinking_blocks + text_blocks + tool_use_blocks
 
     openai_message = {"role": Constants.ROLE_ASSISTANT}
 

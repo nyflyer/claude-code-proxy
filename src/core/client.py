@@ -6,6 +6,9 @@ from openai import AsyncOpenAI, AsyncAzureOpenAI
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from openai._exceptions import APIError, RateLimitError, AuthenticationError, BadRequestError
 
+from src.core.config import config
+from src.core.logging import logger
+
 class OpenAIClient:
     """Async OpenAI client with cancellation support."""
     
@@ -31,6 +34,11 @@ class OpenAIClient:
     
     async def create_chat_completion(self, request: Dict[str, Any], request_id: Optional[str] = None) -> Dict[str, Any]:
         """Send chat completion to OpenAI API with cancellation support."""
+        
+        # Debug logging for outgoing requests
+        if config.debug_requests:
+            logger.debug(f"=== OUTGOING REQUEST ({request_id}) ===")
+            logger.debug(f"Request to OpenAI: {json.dumps(request, indent=2, ensure_ascii=False)}")
         
         # Create cancellation token if request_id provided
         if request_id:
@@ -69,7 +77,14 @@ class OpenAIClient:
                 completion = await completion_task
             
             # Convert to dict format that matches the original interface
-            return completion.model_dump()
+            response_dict = completion.model_dump()
+            
+            # Debug logging for incoming responses
+            if config.debug_requests:
+                logger.debug(f"=== INCOMING RESPONSE ({request_id}) ===")
+                logger.debug(f"Response from OpenAI: {json.dumps(response_dict, indent=2, ensure_ascii=False)}")
+            
+            return response_dict
         
         except AuthenticationError as e:
             raise HTTPException(status_code=401, detail=self.classify_openai_error(str(e)))
@@ -90,6 +105,11 @@ class OpenAIClient:
     
     async def create_chat_completion_stream(self, request: Dict[str, Any], request_id: Optional[str] = None) -> AsyncGenerator[str, None]:
         """Send streaming chat completion to OpenAI API with cancellation support."""
+        
+        # Debug logging for outgoing streaming requests
+        if config.debug_requests:
+            logger.debug(f"=== OUTGOING STREAMING REQUEST ({request_id}) ===")
+            logger.debug(f"Streaming request to OpenAI: {json.dumps(request, indent=2, ensure_ascii=False)}")
         
         # Create cancellation token if request_id provided
         if request_id:
@@ -114,6 +134,14 @@ class OpenAIClient:
                 
                 # Convert chunk to SSE format matching original HTTP client format
                 chunk_dict = chunk.model_dump()
+                
+                # Debug logging for streaming chunks (only log non-empty chunks to avoid spam)
+                if config.debug_requests and chunk_dict.get("choices") and len(chunk_dict["choices"]) > 0:
+                    delta = chunk_dict["choices"][0].get("delta", {})
+                    if delta.get("content") or delta.get("tool_calls"):
+                        logger.debug(f"=== STREAMING CHUNK ({request_id}) ===")
+                        logger.debug(f"Chunk from OpenAI: {json.dumps(chunk_dict, indent=2, ensure_ascii=False)}")
+                
                 chunk_json = json.dumps(chunk_dict, ensure_ascii=False)
                 yield f"data: {chunk_json}"
             

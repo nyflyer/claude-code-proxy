@@ -52,12 +52,23 @@ async def create_message(request: ClaudeMessagesRequest, http_request: Request, 
         logger.debug(
             f"Processing Claude request: model={request.model}, stream={request.stream}"
         )
+        
+        # Debug logging for incoming Claude requests
+        if config.debug_requests:
+            logger.debug(f"=== INCOMING CLAUDE REQUEST ===")
+            logger.debug(f"Claude request: {request.model_dump_json(indent=2)}")
 
         # Generate unique request ID for cancellation tracking
         request_id = str(uuid.uuid4())
 
         # Convert Claude request to OpenAI format
         openai_request = convert_claude_to_openai(request, model_manager)
+        
+        # Debug logging for converted OpenAI request
+        if config.debug_requests:
+            logger.debug(f"=== CONVERTED OPENAI REQUEST ===")
+            import json
+            logger.debug(f"Converted to OpenAI: {json.dumps(openai_request, indent=2, ensure_ascii=False)}")
 
         # Check if client disconnected before processing
         if await http_request.is_disconnected():
@@ -106,6 +117,13 @@ async def create_message(request: ClaudeMessagesRequest, http_request: Request, 
             claude_response = convert_openai_to_claude_response(
                 openai_response, request
             )
+            
+            # Debug logging for outgoing Claude response
+            if config.debug_requests:
+                logger.debug(f"=== OUTGOING CLAUDE RESPONSE ===")
+                import json
+                logger.debug(f"Claude response: {json.dumps(claude_response, indent=2, ensure_ascii=False)}")
+            
             return claude_response
     except HTTPException:
         raise
