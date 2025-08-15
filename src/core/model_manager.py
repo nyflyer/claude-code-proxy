@@ -29,7 +29,23 @@ class ModelManager:
 
     def should_enable_thinking(self, claude_request) -> bool:
         """Check if thinking should be enabled"""
-        return (claude_request.thinking and claude_request.thinking.enabled) or "thinking" in claude_request.model.lower()
+        # Check if thinking injection is disabled globally
+        if not self.config.enable_thinking_injection or self.config.thinking_injection_mode == "disabled":
+            return False
+            
+        # Explicit request-level thinking configuration takes precedence
+        if claude_request.thinking:
+            return claude_request.thinking.enabled
+            
+        # In conservative mode, only enable if explicitly requested
+        if self.config.thinking_injection_mode == "conservative":
+            return False
+            
+        # In aggressive mode, enable for thinking models  
+        if self.config.thinking_injection_mode == "aggressive":
+            return "thinking" in claude_request.model.lower()
+            
+        return False
 
     def get_thinking_params(self, claude_model: str) -> dict:
         """Get thinking parameters"""

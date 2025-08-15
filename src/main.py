@@ -56,6 +56,7 @@ def main():
     print(f"   Server: {config.host}:{config.port}")
     print(f"   Client API Key Validation: {'Enabled' if config.anthropic_api_key else 'Disabled'}")
     print(f"   Debug Requests: {'Enabled' if config.debug_requests else 'Disabled'}")
+    print(f"   Thinking Injection: {'Enabled' if config.enable_thinking_injection else 'Disabled'} ({config.thinking_injection_mode} mode)")
     print(f"   Log Level: {config.log_level}")
     print("")
 

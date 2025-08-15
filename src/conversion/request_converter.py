@@ -21,7 +21,9 @@ def convert_claude_to_openai(
     thinking_enabled = model_manager.should_enable_thinking(claude_request)
 
     # If thinking is enabled, patch any assistant messages that use tools but lack a thinking block.
-    if thinking_enabled:
+    # Only do this if thinking was explicitly requested, not auto-enabled
+    if thinking_enabled and claude_request.thinking and claude_request.thinking.enabled:
+        injection_count = 0
         for msg in claude_request.messages:
             if msg.role == Constants.ROLE_ASSISTANT and isinstance(msg.content, list):
                 has_tool_use = any(
@@ -41,6 +43,12 @@ def convert_claude_to_openai(
                     msg.content.insert(
                         0, ClaudeContentBlockThinking(type="thinking", thinking="...")
                     )
+                    injection_count += 1
+        
+        if injection_count > 0:
+            logger.info(f"Injected {injection_count} thinking blocks for thinking-enabled conversation")
+    elif thinking_enabled:
+        logger.debug("Thinking enabled but no explicit thinking request - skipping injection")
 
     # Map model
     openai_model = model_manager.map_claude_model_to_openai(claude_request.model)
@@ -96,8 +104,14 @@ def convert_claude_to_openai(
                 ):
                     # Process tool results
                     i += 1  # Skip to tool result message
-                    tool_results = convert_claude_tool_results(next_msg)
-                    openai_messages.extend(tool_results)
+                    if thinking_enabled:
+                        # When thinking is enabled, tool results go in user message content
+                        tool_result_message = convert_claude_tool_results_for_thinking(next_msg)
+                        openai_messages.append(tool_result_message)
+                    else:
+                        # Traditional OpenAI format with separate tool messages
+                        tool_results = convert_claude_tool_results(next_msg)
+                        openai_messages.extend(tool_results)
 
         i += 1
 
@@ -162,6 +176,13 @@ def convert_claude_to_openai(
             openai_request["extra_body"] = {}
         openai_request["extra_body"].update(thinking_params)
 
+    # Validate tool use/result pairing to prevent API errors
+    if claude_request.tools:
+        is_valid = validate_tool_use_pairing(openai_messages, thinking_enabled)
+        if not is_valid:
+            logger.error("Tool use/result validation failed - this may cause API errors")
+            # Consider raising an exception here in strict mode
+            
     return openai_request
 
 
@@ -251,28 +272,25 @@ def convert_claude_assistant_message(msg: ClaudeMessage, thinking_enabled: bool 
             thinking_blocks.append(block.model_dump(exclude_none=True))
 
     # When thinking is enabled, ensure there's at least one thinking block at the start
-    if thinking_enabled and not thinking_blocks:
+    if thinking_enabled and tool_use_blocks and not thinking_blocks:
         thinking_blocks.append({"type": "thinking", "thinking": "..."})
 
-    # Handle content ordering based on thinking enablement and tool presence
+    # Handle content ordering - always preserve original structure when possible
     if thinking_enabled and tool_use_blocks:
-        # When thinking is enabled AND tool calls are present, 
-        # text blocks must not appear between thinking and tool calls
-        # Merge any text content into the thinking block if needed
-        if text_blocks and thinking_blocks:
-            # Extract text content and merge into thinking block
+        # When thinking is enabled with tools, we need to be careful about ordering
+        # Only merge text into thinking if there's no existing thinking content
+        if text_blocks and thinking_blocks and thinking_blocks[0].get("thinking") == "...":
+            # Only merge if the thinking block is a placeholder
             text_content = " ".join([block["text"] for block in text_blocks if block.get("text")])
             if text_content.strip():
-                # Enhance the thinking block with the text content
-                current_thinking = thinking_blocks[0].get("thinking", "...")
-                if current_thinking == "...":
-                    thinking_blocks[0]["thinking"] = text_content
-                else:
-                    thinking_blocks[0]["thinking"] = f"{current_thinking}\n\n{text_content}"
+                thinking_blocks[0]["thinking"] = text_content
+                # Remove text blocks since they're now in thinking
+                text_blocks = []
+                logger.debug("Merged placeholder thinking with text content")
         
-        # Only thinking blocks followed by tool use blocks (no text blocks in between)
-        openai_content = thinking_blocks + tool_use_blocks
-        logger.debug(f"Thinking enabled with tools: merged text into thinking block, final content has {len(thinking_blocks)} thinking + {len(tool_use_blocks)} tool blocks")
+        # Preserve proper ordering: thinking -> text -> tools (if text wasn't merged)
+        openai_content = thinking_blocks + text_blocks + tool_use_blocks
+        logger.debug(f"Thinking enabled with tools: {len(thinking_blocks)} thinking + {len(text_blocks)} text + {len(tool_use_blocks)} tool blocks")
     else:
         # Normal ordering: thinking blocks first, then text, then tool_use blocks
         openai_content = thinking_blocks + text_blocks + tool_use_blocks
@@ -320,6 +338,32 @@ def convert_claude_tool_results(msg: ClaudeMessage) -> List[Dict[str, Any]]:
     return tool_messages
 
 
+def convert_claude_tool_results_for_thinking(msg: ClaudeMessage) -> Dict[str, Any]:
+    """Convert Claude tool results to thinking-enabled format (content blocks in user message)."""
+    content_blocks = []
+
+    if isinstance(msg.content, list):
+        for block in msg.content:
+            if block.type == Constants.CONTENT_TOOL_RESULT:
+                content = parse_tool_result_content(block.content)
+                content_blocks.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.tool_use_id,
+                    "content": content
+                })
+            elif block.type == Constants.CONTENT_TEXT:
+                # Preserve any text content in the message
+                content_blocks.append({
+                    "type": "text",
+                    "text": block.text
+                })
+
+    return {
+        "role": Constants.ROLE_USER,
+        "content": content_blocks
+    }
+
+
 def parse_tool_result_content(content):
     """Parse and normalize tool result content into a string format."""
     if content is None:
@@ -357,3 +401,54 @@ def parse_tool_result_content(content):
         return str(content)
     except:
         return "Unparseable content"
+
+
+def validate_tool_use_pairing(openai_messages: List[Dict[str, Any]], thinking_enabled: bool) -> bool:
+    """Validate that tool use and tool result messages are properly paired."""
+    pending_tool_calls = set()
+    
+    for i, message in enumerate(openai_messages):
+        role = message.get("role")
+        
+        if role == Constants.ROLE_ASSISTANT:
+            # Extract tool call IDs from different formats
+            if thinking_enabled and isinstance(message.get("content"), list):
+                # Thinking-enabled format: tool calls in content blocks
+                for block in message["content"]:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tool_id = block.get("id")
+                        if tool_id:
+                            pending_tool_calls.add(tool_id)
+            else:
+                # Traditional format: tool calls in separate field
+                tool_calls = message.get("tool_calls", [])
+                for tool_call in tool_calls:
+                    tool_id = tool_call.get("id")
+                    if tool_id:
+                        pending_tool_calls.add(tool_id)
+        
+        elif role == Constants.ROLE_TOOL:
+            # Traditional tool result format
+            tool_call_id = message.get("tool_call_id")
+            if tool_call_id in pending_tool_calls:
+                pending_tool_calls.remove(tool_call_id)
+            else:
+                logger.warning(f"Tool result references non-existent tool call: {tool_call_id}")
+                return False
+        
+        elif role == Constants.ROLE_USER and thinking_enabled and isinstance(message.get("content"), list):
+            # Thinking-enabled format: tool results in user message content
+            for block in message.get("content", []):
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    tool_use_id = block.get("tool_use_id")
+                    if tool_use_id in pending_tool_calls:
+                        pending_tool_calls.remove(tool_use_id)
+                    else:
+                        logger.warning(f"Tool result references non-existent tool use: {tool_use_id}")
+                        return False
+    
+    if pending_tool_calls:
+        logger.warning(f"Unmatched tool calls remain: {pending_tool_calls}")
+        return False
+    
+    return True

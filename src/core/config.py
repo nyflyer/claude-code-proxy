@@ -23,6 +23,10 @@ class Config:
         self.min_tokens_limit = int(os.environ.get("MIN_TOKENS_LIMIT", "100"))
         self.thinking_budget = int(os.environ.get("THINKING_BUDGET", "2048"))
         
+        # Thinking injection controls
+        self.enable_thinking_injection = os.environ.get("ENABLE_THINKING_INJECTION", "true").lower() == "true"
+        self.thinking_injection_mode = os.environ.get("THINKING_INJECTION_MODE", "conservative").lower()  # conservative, aggressive, disabled
+        
         # Connection settings
         self.request_timeout = int(os.environ.get("REQUEST_TIMEOUT", "90"))
         self.max_retries = int(os.environ.get("MAX_RETRIES", "2"))
