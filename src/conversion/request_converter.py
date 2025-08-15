@@ -205,6 +205,7 @@ def convert_claude_assistant_message(msg: ClaudeMessage, thinking_enabled: bool 
     """Convert Claude assistant message to OpenAI format, ensuring thinking blocks are first when thinking is enabled."""
     text_blocks = []
     tool_calls = []
+    tool_use_blocks = []
     thinking_blocks = []
 
     if msg.content is None:
@@ -226,16 +227,26 @@ def convert_claude_assistant_message(msg: ClaudeMessage, thinking_enabled: bool 
         if block.type == Constants.CONTENT_TEXT:
             text_blocks.append({"type": "text", "text": block.text})
         elif block.type == Constants.CONTENT_TOOL_USE:
-            tool_calls.append(
-                {
+            # When thinking is enabled, tool uses go in content blocks
+            # When thinking is disabled, they go in separate tool_calls field
+            if thinking_enabled:
+                tool_use_blocks.append({
+                    "type": "tool_use",
                     "id": block.id,
-                    "type": Constants.TOOL_FUNCTION,
-                    Constants.TOOL_FUNCTION: {
-                        "name": block.name,
-                        "arguments": json.dumps(block.input, ensure_ascii=False),
-                    },
-                }
-            )
+                    "name": block.name,
+                    "input": block.input
+                })
+            else:
+                tool_calls.append(
+                    {
+                        "id": block.id,
+                        "type": Constants.TOOL_FUNCTION,
+                        Constants.TOOL_FUNCTION: {
+                            "name": block.name,
+                            "arguments": json.dumps(block.input, ensure_ascii=False),
+                        },
+                    }
+                )
         elif block.type in [Constants.CONTENT_THINKING, Constants.CONTENT_REDACTED_THINKING]:
             thinking_blocks.append(block.model_dump(exclude_none=True))
 
@@ -243,18 +254,19 @@ def convert_claude_assistant_message(msg: ClaudeMessage, thinking_enabled: bool 
     if thinking_enabled and not thinking_blocks:
         thinking_blocks.append({"type": "thinking", "thinking": "..."})
 
-    # Re-order to ensure thinking blocks are first, as required by the API
-    openai_content = thinking_blocks + text_blocks
+    # Re-order to ensure thinking blocks are first, followed by text, then tool_use blocks
+    openai_content = thinking_blocks + text_blocks + tool_use_blocks
 
     openai_message = {"role": Constants.ROLE_ASSISTANT}
 
-    # Set content field - when thinking is enabled, always use content blocks format
-    if thinking_enabled and (openai_content or tool_calls):
+    # Set content field based on thinking enablement
+    if thinking_enabled:
+        # When thinking is enabled, always use content blocks format
         openai_message["content"] = openai_content if openai_content else None
     elif not openai_content and not tool_calls:
         openai_message["content"] = None
-    elif len(openai_content) == 1 and openai_content[0]["type"] == "text" and not tool_calls and not thinking_enabled:
-        # Simplify to a string if it's just a single text block and thinking is not enabled
+    elif len(openai_content) == 1 and openai_content[0]["type"] == "text" and not tool_calls:
+        # Simplify to a string if it's just a single text block and no tool calls
         openai_message["content"] = openai_content[0]["text"]
     elif openai_content:
         # Pass as a list of content blocks
@@ -262,8 +274,8 @@ def convert_claude_assistant_message(msg: ClaudeMessage, thinking_enabled: bool 
     else:
         openai_message["content"] = None
 
-    # Set tool calls
-    if tool_calls:
+    # Set tool calls only when thinking is disabled
+    if tool_calls and not thinking_enabled:
         openai_message["tool_calls"] = tool_calls
 
     return openai_message
