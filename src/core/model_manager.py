@@ -27,4 +27,12 @@ class ModelManager:
             # Default to big model for unknown models
             return self.config.big_model
 
+    def should_enable_thinking(self, claude_request) -> bool:
+        """Check if thinking should be enabled"""
+        return (claude_request.thinking and claude_request.thinking.enabled) or "thinking" in claude_request.model.lower()
+
+    def get_thinking_params(self, claude_model: str) -> dict:
+        """Get thinking parameters"""
+        return {"thinking": {"type": "enabled", "budget_tokens": self.config.thinking_budget}}
+
 model_manager = ModelManager(config)

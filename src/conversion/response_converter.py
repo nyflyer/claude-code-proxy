@@ -21,10 +21,23 @@ def convert_openai_to_claude_response(
     # Build Claude content blocks
     content_blocks = []
 
-    # Add text content
-    text_content = message.get("content")
-    if text_content is not None:
-        content_blocks.append({"type": Constants.CONTENT_TEXT, "text": text_content})
+    # The response from LiteLLM might have content as a string or a list of blocks
+    response_content = message.get("content")
+
+    if isinstance(response_content, str):
+        # Handle simple text response
+        if response_content:
+            content_blocks.append({"type": Constants.CONTENT_TEXT, "text": response_content})
+    elif isinstance(response_content, list):
+        # Handle list of content blocks (which could include thinking)
+        for block in response_content:
+            if isinstance(block, dict):
+                block_type = block.get("type")
+                if block_type == Constants.CONTENT_TEXT:
+                    content_blocks.append({"type": Constants.CONTENT_TEXT, "text": block.get("text", "")})
+                elif block_type in [Constants.CONTENT_THINKING, Constants.CONTENT_REDACTED_THINKING]:
+                    # Pass through the thinking block directly
+                    content_blocks.append(block)
 
     # Add tool calls
     tool_calls = message.get("tool_calls", []) or []

@@ -9,6 +9,8 @@ class Constants:
     CONTENT_IMAGE = "image"
     CONTENT_TOOL_USE = "tool_use"
     CONTENT_TOOL_RESULT = "tool_result"
+    CONTENT_THINKING = "thinking"
+    CONTENT_REDACTED_THINKING = "redacted_thinking"
     
     TOOL_FUNCTION = "function"
     

@@ -2,7 +2,11 @@ import json
 from typing import Dict, Any, List
 from venv import logger
 from src.core.constants import Constants
-from src.models.claude import ClaudeMessagesRequest, ClaudeMessage
+from src.models.claude import (
+    ClaudeMessagesRequest,
+    ClaudeMessage,
+    ClaudeContentBlockThinking,
+)
 from src.core.config import config
 import logging
 
@@ -13,6 +17,30 @@ def convert_claude_to_openai(
     claude_request: ClaudeMessagesRequest, model_manager
 ) -> Dict[str, Any]:
     """Convert Claude API request format to OpenAI format."""
+
+    thinking_enabled = model_manager.should_enable_thinking(claude_request)
+
+    # If thinking is enabled, patch any assistant messages that use tools but lack a thinking block.
+    if thinking_enabled:
+        for msg in claude_request.messages:
+            if msg.role == Constants.ROLE_ASSISTANT and isinstance(msg.content, list):
+                has_tool_use = any(
+                    getattr(b, "type", None) == Constants.CONTENT_TOOL_USE
+                    for b in msg.content
+                )
+                has_thinking = any(
+                    getattr(b, "type", None) == Constants.CONTENT_THINKING
+                    for b in msg.content
+                )
+
+                # Per Anthropic docs, if an assistant message has tool use, it must also have a thinking block.
+                if has_tool_use and not has_thinking:
+                    logger.info(
+                        "Injecting placeholder thinking block into an assistant message for compatibility."
+                    )
+                    msg.content.insert(
+                        0, ClaudeContentBlockThinking(type="thinking", thinking="...")
+                    )
 
     # Map model
     openai_model = model_manager.map_claude_model_to_openai(claude_request.model)
@@ -51,7 +79,7 @@ def convert_claude_to_openai(
             openai_message = convert_claude_user_message(msg)
             openai_messages.append(openai_message)
         elif msg.role == Constants.ROLE_ASSISTANT:
-            openai_message = convert_claude_assistant_message(msg)
+            openai_message = convert_claude_assistant_message(msg, thinking_enabled)
             openai_messages.append(openai_message)
 
             # Check if next message contains tool results
@@ -126,6 +154,14 @@ def convert_claude_to_openai(
         else:
             openai_request["tool_choice"] = "auto"
 
+    # Add thinking if enabled, using extra_body to pass non-standard parameters
+    if model_manager.should_enable_thinking(claude_request):
+        logger.info("Thinking is enabled for this request.")
+        thinking_params = model_manager.get_thinking_params(claude_request.model)
+        if "extra_body" not in openai_request:
+            openai_request["extra_body"] = {}
+        openai_request["extra_body"].update(thinking_params)
+
     return openai_request
 
 
@@ -165,20 +201,30 @@ def convert_claude_user_message(msg: ClaudeMessage) -> Dict[str, Any]:
         return {"role": Constants.ROLE_USER, "content": openai_content}
 
 
-def convert_claude_assistant_message(msg: ClaudeMessage) -> Dict[str, Any]:
-    """Convert Claude assistant message to OpenAI format."""
-    text_parts = []
+def convert_claude_assistant_message(msg: ClaudeMessage, thinking_enabled: bool = False) -> Dict[str, Any]:
+    """Convert Claude assistant message to OpenAI format, ensuring thinking blocks are first when thinking is enabled."""
+    text_blocks = []
     tool_calls = []
+    thinking_blocks = []
 
     if msg.content is None:
         return {"role": Constants.ROLE_ASSISTANT, "content": None}
     
     if isinstance(msg.content, str):
+        # If thinking is enabled and we have a simple string, we need to add a thinking block
+        if thinking_enabled:
+            return {
+                "role": Constants.ROLE_ASSISTANT, 
+                "content": [
+                    {"type": "thinking", "thinking": "..."},
+                    {"type": "text", "text": msg.content}
+                ]
+            }
         return {"role": Constants.ROLE_ASSISTANT, "content": msg.content}
 
     for block in msg.content:
         if block.type == Constants.CONTENT_TEXT:
-            text_parts.append(block.text)
+            text_blocks.append({"type": "text", "text": block.text})
         elif block.type == Constants.CONTENT_TOOL_USE:
             tool_calls.append(
                 {
@@ -190,12 +236,29 @@ def convert_claude_assistant_message(msg: ClaudeMessage) -> Dict[str, Any]:
                     },
                 }
             )
+        elif block.type in [Constants.CONTENT_THINKING, Constants.CONTENT_REDACTED_THINKING]:
+            thinking_blocks.append(block.model_dump(exclude_none=True))
+
+    # When thinking is enabled, ensure there's at least one thinking block at the start
+    if thinking_enabled and not thinking_blocks:
+        thinking_blocks.append({"type": "thinking", "thinking": "..."})
+
+    # Re-order to ensure thinking blocks are first, as required by the API
+    openai_content = thinking_blocks + text_blocks
 
     openai_message = {"role": Constants.ROLE_ASSISTANT}
 
-    # Set content
-    if text_parts:
-        openai_message["content"] = "".join(text_parts)
+    # Set content field - when thinking is enabled, always use content blocks format
+    if thinking_enabled and (openai_content or tool_calls):
+        openai_message["content"] = openai_content if openai_content else None
+    elif not openai_content and not tool_calls:
+        openai_message["content"] = None
+    elif len(openai_content) == 1 and openai_content[0]["type"] == "text" and not tool_calls and not thinking_enabled:
+        # Simplify to a string if it's just a single text block and thinking is not enabled
+        openai_message["content"] = openai_content[0]["text"]
+    elif openai_content:
+        # Pass as a list of content blocks
+        openai_message["content"] = openai_content
     else:
         openai_message["content"] = None
 

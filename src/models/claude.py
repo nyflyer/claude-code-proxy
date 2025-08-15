@@ -20,13 +20,22 @@ class ClaudeContentBlockToolResult(BaseModel):
     tool_use_id: str
     content: Union[str, List[Dict[str, Any]], Dict[str, Any]]
 
+class ClaudeContentBlockThinking(BaseModel):
+    type: Literal["thinking"]
+    thinking: Optional[str] = None
+    signature: Optional[str] = None
+
+class ClaudeContentBlockRedactedThinking(BaseModel):
+    type: Literal["redacted_thinking"]
+    data: str
+
 class ClaudeSystemContent(BaseModel):
     type: Literal["text"]
     text: str
 
 class ClaudeMessage(BaseModel):
     role: Literal["user", "assistant"]
-    content: Union[str, List[Union[ClaudeContentBlockText, ClaudeContentBlockImage, ClaudeContentBlockToolUse, ClaudeContentBlockToolResult]]]
+    content: Union[str, List[Union[ClaudeContentBlockText, ClaudeContentBlockImage, ClaudeContentBlockToolUse, ClaudeContentBlockToolResult, ClaudeContentBlockThinking, ClaudeContentBlockRedactedThinking]]]
 
 class ClaudeTool(BaseModel):
     name: str
