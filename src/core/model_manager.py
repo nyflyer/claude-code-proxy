@@ -1,4 +1,7 @@
 from src.core.config import config
+import logging
+
+logger = logging.getLogger(__name__)
 
 class ModelManager:
     def __init__(self, config):
