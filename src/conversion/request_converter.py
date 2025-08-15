@@ -91,7 +91,8 @@ def convert_claude_to_openai(
             openai_messages.append(openai_message)
 
             # Check if next message contains tool results
-            if i + 1 < len(claude_request.messages):
+            # Only extract tool results to separate messages when thinking is disabled
+            if not thinking_enabled and i + 1 < len(claude_request.messages):
                 next_msg = claude_request.messages[i + 1]
                 if (
                     next_msg.role == Constants.ROLE_USER
@@ -104,8 +105,7 @@ def convert_claude_to_openai(
                 ):
                     # Process tool results
                     i += 1  # Skip to tool result message
-                    # Use standard OpenAI tool message format for all cases
-                    # This maintains compatibility with all OpenAI-compatible endpoints
+                    # Use standard OpenAI tool message format for non-thinking mode
                     tool_results = convert_claude_tool_results(next_msg)
                     openai_messages.extend(tool_results)
 
@@ -211,11 +211,22 @@ def convert_claude_user_message(msg: ClaudeMessage) -> Dict[str, Any]:
                         },
                     }
                 )
+        elif block.type == Constants.CONTENT_TOOL_RESULT:
+            # Handle tool results in thinking mode - keep them in user message content
+            content = parse_tool_result_content(block.content)
+            openai_content.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.tool_use_id,
+                    "content": content,
+                }
+            )
 
     if len(openai_content) == 1 and openai_content[0]["type"] == "text":
         return {"role": Constants.ROLE_USER, "content": openai_content[0]["text"]}
     else:
         return {"role": Constants.ROLE_USER, "content": openai_content}
+
 
 
 def convert_claude_assistant_message(msg: ClaudeMessage, thinking_enabled: bool = False) -> Dict[str, Any]:
@@ -243,31 +254,31 @@ def convert_claude_assistant_message(msg: ClaudeMessage, thinking_enabled: bool 
         if block.type == Constants.CONTENT_TEXT:
             text_blocks.append({"type": "text", "text": block.text})
         elif block.type == Constants.CONTENT_TOOL_USE:
-            # Always create tool_calls entry for tool result pairing
-            tool_calls.append(
-                {
-                    "id": block.id,
-                    "type": Constants.TOOL_FUNCTION,
-                    Constants.TOOL_FUNCTION: {
-                        "name": block.name,
-                        "arguments": json.dumps(block.input, ensure_ascii=False),
-                    },
-                }
-            )
-            # When thinking is enabled, also add to content blocks
             if thinking_enabled:
+                # When thinking enabled: use content blocks format only
                 tool_use_blocks.append({
                     "type": "tool_use",
                     "id": block.id,
                     "name": block.name,
                     "input": block.input
                 })
+            else:
+                # When thinking disabled: use traditional tool_calls format
+                tool_calls.append(
+                    {
+                        "id": block.id,
+                        "type": Constants.TOOL_FUNCTION,
+                        Constants.TOOL_FUNCTION: {
+                            "name": block.name,
+                            "arguments": json.dumps(block.input, ensure_ascii=False),
+                        },
+                    }
+                )
         elif block.type in [Constants.CONTENT_THINKING, Constants.CONTENT_REDACTED_THINKING]:
             thinking_blocks.append(block.model_dump(exclude_none=True))
 
-    # Handle content ordering - when thinking is enabled and there are tool use blocks,
-    # we MUST ensure a thinking block comes first per Anthropic's requirement
-    if thinking_enabled and (tool_use_blocks or tool_calls):
+    # Handle content ordering - when thinking is enabled, we MUST ensure a thinking block comes first
+    if thinking_enabled:
         # Ensure we have at least one thinking block at the start
         if not thinking_blocks:
             thinking_blocks.append({"type": "thinking", "thinking": "..."})
@@ -283,7 +294,7 @@ def convert_claude_assistant_message(msg: ClaudeMessage, thinking_enabled: bool 
         
         # Preserve proper ordering: thinking MUST be first, then text, then tools
         openai_content = thinking_blocks + text_blocks + tool_use_blocks
-        logger.debug(f"Thinking enabled with tools: {len(thinking_blocks)} thinking + {len(text_blocks)} text + {len(tool_use_blocks)} tool blocks")
+        logger.debug(f"Thinking enabled: {len(thinking_blocks)} thinking + {len(text_blocks)} text + {len(tool_use_blocks)} tool blocks")
     else:
         # Normal ordering: thinking blocks first, then text, then tool_use blocks
         openai_content = thinking_blocks + text_blocks + tool_use_blocks
@@ -305,7 +316,7 @@ def convert_claude_assistant_message(msg: ClaudeMessage, thinking_enabled: bool 
     else:
         openai_message["content"] = None
 
-    # Always set tool calls when they exist (needed for tool result pairing)
+    # Set tool calls when they exist (only created when thinking is disabled)
     if tool_calls:
         openai_message["tool_calls"] = tool_calls
 
