@@ -91,8 +91,8 @@ def convert_claude_to_openai(
             openai_messages.append(openai_message)
 
             # Check if next message contains tool results
-            # Only extract tool results to separate messages when thinking is disabled
-            if not thinking_enabled and i + 1 < len(claude_request.messages):
+            # Always extract tool results to separate role:"tool" messages for LiteLLM compatibility
+            if i + 1 < len(claude_request.messages):
                 next_msg = claude_request.messages[i + 1]
                 if (
                     next_msg.role == Constants.ROLE_USER
@@ -105,7 +105,7 @@ def convert_claude_to_openai(
                 ):
                     # Process tool results
                     i += 1  # Skip to tool result message
-                    # Use standard OpenAI tool message format for non-thinking mode
+                    # Use standard OpenAI tool message format for LiteLLM compatibility
                     tool_results = convert_claude_tool_results(next_msg)
                     openai_messages.extend(tool_results)
 
@@ -211,16 +211,6 @@ def convert_claude_user_message(msg: ClaudeMessage) -> Dict[str, Any]:
                         },
                     }
                 )
-        elif block.type == Constants.CONTENT_TOOL_RESULT:
-            # Handle tool results in thinking mode - keep them in user message content
-            content = parse_tool_result_content(block.content)
-            openai_content.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": block.tool_use_id,
-                    "content": content,
-                }
-            )
 
     if len(openai_content) == 1 and openai_content[0]["type"] == "text":
         return {"role": Constants.ROLE_USER, "content": openai_content[0]["text"]}
@@ -240,83 +230,49 @@ def convert_claude_assistant_message(msg: ClaudeMessage, thinking_enabled: bool 
         return {"role": Constants.ROLE_ASSISTANT, "content": None}
     
     if isinstance(msg.content, str):
-        # If thinking is enabled and we have a simple string, put it in a thinking block
-        if thinking_enabled:
-            return {
-                "role": Constants.ROLE_ASSISTANT, 
-                "content": [
-                    {"type": "thinking", "thinking": msg.content}
-                ]
-            }
+        # Always use standard OpenAI text format
         return {"role": Constants.ROLE_ASSISTANT, "content": msg.content}
 
     for block in msg.content:
         if block.type == Constants.CONTENT_TEXT:
             text_blocks.append({"type": "text", "text": block.text})
         elif block.type == Constants.CONTENT_TOOL_USE:
-            if thinking_enabled:
-                # When thinking enabled: use content blocks format only
-                tool_use_blocks.append({
-                    "type": "tool_use",
+            # Always use OpenAI tool_calls format for LiteLLM compatibility
+            tool_calls.append(
+                {
                     "id": block.id,
-                    "name": block.name,
-                    "input": block.input
-                })
-            else:
-                # When thinking disabled: use traditional tool_calls format
-                tool_calls.append(
-                    {
-                        "id": block.id,
-                        "type": Constants.TOOL_FUNCTION,
-                        Constants.TOOL_FUNCTION: {
-                            "name": block.name,
-                            "arguments": json.dumps(block.input, ensure_ascii=False),
-                        },
-                    }
-                )
+                    "type": Constants.TOOL_FUNCTION,
+                    Constants.TOOL_FUNCTION: {
+                        "name": block.name,
+                        "arguments": json.dumps(block.input, ensure_ascii=False),
+                    },
+                }
+            )
         elif block.type in [Constants.CONTENT_THINKING, Constants.CONTENT_REDACTED_THINKING]:
             thinking_blocks.append(block.model_dump(exclude_none=True))
 
-    # Handle content ordering - when thinking is enabled, we MUST ensure a thinking block comes first
-    if thinking_enabled:
-        # Ensure we have at least one thinking block at the start
-        if not thinking_blocks:
-            thinking_blocks.append({"type": "thinking", "thinking": "..."})
-        
-        # If we have text content and only placeholder thinking, merge them
-        if text_blocks and len(thinking_blocks) == 1 and thinking_blocks[0].get("thinking") == "...":
-            text_content = " ".join([block["text"] for block in text_blocks if block.get("text")])
-            if text_content.strip():
-                thinking_blocks[0]["thinking"] = text_content
-                # Remove text blocks since they're now in thinking
-                text_blocks = []
-                logger.debug("Merged placeholder thinking with text content")
-        
-        # Preserve proper ordering: thinking MUST be first, then text, then tools
-        openai_content = thinking_blocks + text_blocks + tool_use_blocks
-        logger.debug(f"Thinking enabled: {len(thinking_blocks)} thinking + {len(text_blocks)} text + {len(tool_use_blocks)} tool blocks")
-    else:
-        # Normal ordering: thinking blocks first, then text, then tool_use blocks
-        openai_content = thinking_blocks + text_blocks + tool_use_blocks
+    # Extract content as standard text for OpenAI format
+    content_parts = []
+    
+    # Add thinking content first (extracted as text)
+    for thinking_block in thinking_blocks:
+        if "thinking" in thinking_block:
+            content_parts.append(thinking_block["thinking"])
+    
+    # Add regular text content
+    for text_block in text_blocks:
+        if "text" in text_block:
+            content_parts.append(text_block["text"])
+    
+    # Combine all text content
+    combined_content = "\n\n".join(content_parts).strip() if content_parts else None
 
     openai_message = {"role": Constants.ROLE_ASSISTANT}
 
-    # Set content field based on thinking enablement
-    if thinking_enabled:
-        # When thinking is enabled, always use content blocks format
-        openai_message["content"] = openai_content if openai_content else None
-    elif not openai_content and not tool_calls:
-        openai_message["content"] = None
-    elif len(openai_content) == 1 and openai_content[0]["type"] == "text" and not tool_calls:
-        # Simplify to a string if it's just a single text block and no tool calls
-        openai_message["content"] = openai_content[0]["text"]
-    elif openai_content:
-        # Pass as a list of content blocks
-        openai_message["content"] = openai_content
-    else:
-        openai_message["content"] = None
+    # Always use standard OpenAI format (text content + tool_calls)
+    openai_message["content"] = combined_content
 
-    # Set tool calls when they exist (only created when thinking is disabled)
+    # Set tool calls when they exist
     if tool_calls:
         openai_message["tool_calls"] = tool_calls
 

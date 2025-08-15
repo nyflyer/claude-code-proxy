@@ -29,6 +29,11 @@ class ModelManager:
 
     def should_enable_thinking(self, claude_request) -> bool:
         """Check if thinking should be enabled"""
+        # Disable thinking if tools are present (LiteLLM format incompatibility)
+        if claude_request.tools:
+            logger.info("Thinking disabled due to tool presence (LiteLLM compatibility)")
+            return False
+            
         # Check if thinking injection is disabled globally
         if not self.config.enable_thinking_injection or self.config.thinking_injection_mode == "disabled":
             return False
